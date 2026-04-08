@@ -23,6 +23,10 @@ PROJECT_ROOT = Path(__file__).parent.resolve()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# ── Create Folder logs in root project ─────────────────────────────
+LOGS_DIR = PROJECT_ROOT / "logs"
+LOGS_DIR.mkdir(exist_ok=True)
+
 
 def setup_logging(log_file: str = "sentinel.log", level: str = "DEBUG") -> None:
     """
@@ -31,7 +35,7 @@ def setup_logging(log_file: str = "sentinel.log", level: str = "DEBUG") -> None:
     All modules use hierarchical loggers under 'sentinel.*'
     which feed into this root configuration.
     """
-    log_path = PROJECT_ROOT / log_file
+    log_path = LOGS_DIR / log_file
 
     # File handler — DEBUG level, full detail
     file_handler = logging.FileHandler(log_path, encoding="utf-8")
