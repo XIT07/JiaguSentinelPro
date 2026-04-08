@@ -24,6 +24,7 @@ import struct
 import zipfile
 import zlib
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -108,13 +109,14 @@ class StaticEngine:
 
     def __init__(
         self,
-        output_dir: str = "unpacked_output",
+        output_dir: str = "results_JiaguSentinel",
         log_callback: Optional[Callable[[str], None]] = None,
         xor_bruteforce: bool = True,
         max_xor_key_len: int = 1,
     ) -> None:
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        # Base root — actual session subfolder is created per scan() call.
+        self._base_output_dir = Path(output_dir)
+        self.output_dir = self._base_output_dir  # will be overridden in scan()
         self._log_cb = log_callback
         self.xor_bruteforce = xor_bruteforce
         self.max_xor_key_len = max_xor_key_len
@@ -224,21 +226,35 @@ class StaticEngine:
     def _extract_dex_at_offset(
         self, data: bytes, offset: int, source_name: str, idx: int = 0
     ) -> Optional[str]:
-        """Extract a DEX file from raw data at the given offset."""
+        """Extract a DEX file from raw data at the given offset, keeping the original filename."""
         dex_data = data[offset:]
-        # Try to read the file_size from the DEX header for precise extraction
+        # Read file_size from the DEX header for precise extraction
         if len(dex_data) >= 36:
             file_size = struct.unpack_from("<I", dex_data, 32)[0]
             if 0 < file_size <= len(dex_data):
                 dex_data = dex_data[:file_size]
 
-        safe_name = source_name.replace("/", "_").replace("\\", "_")
-        out_name = f"static_dex_{safe_name}_{idx}.dex"
-        out_path = self.output_dir / out_name
+        # Use the original basename (e.g. "classes.dex") and only suffix for duplicates
+        base = Path(source_name).name  # e.g. "classes.dex" or "libjiagu.so"
+        if not base.endswith(".dex"):
+            base = base + ".dex"
+        # Disambiguate multiple DEX found in same source file
+        if idx > 0:
+            stem, ext = os.path.splitext(base)
+            base = f"{stem}_{idx}{ext}"          # e.g. classes_1.dex
+
+        out_path = self.output_dir / base
+        # Avoid clobbering existing files with same name from different sources
+        counter = 1
+        while out_path.exists():
+            stem, ext = os.path.splitext(base)
+            out_path = self.output_dir / f"{stem}_{counter}{ext}"
+            counter += 1
+
         out_path.write_bytes(dex_data)
         self._log(
             f"✓ Extracted DEX from '{source_name}' at offset "
-            f"{hex(offset)} → {out_name} ({len(dex_data):,} bytes)"
+            f"{hex(offset)} → {out_path.name} ({len(dex_data):,} bytes)"
         )
         return str(out_path)
 
@@ -376,12 +392,16 @@ class StaticEngine:
         """
         Execute the full static analysis pipeline on an APK file.
 
+        Creates a session output directory:
+            results_JiaguSentinel/<apk_stem>_YYYYMMDD_HHMMSS/
+
         Pipeline:
-        1. Compute APK hash
-        2. Enumerate all entries in the ZIP
-        3. For each entry: entropy scan → DEX pattern match →
+        1. Create session output directory
+        2. Compute APK hash
+        3. Enumerate all entries in the ZIP
+        4. For each entry: entropy scan → DEX pattern match →
            decompress → XOR bruteforce → LIEF ELF inspect → YARA scan
-        4. Aggregate results into StaticResult
+        5. Aggregate results into StaticResult
 
         Args:
             apk_path: Path to the APK file to analyze.
@@ -389,6 +409,14 @@ class StaticEngine:
         Returns:
             StaticResult with all findings.
         """
+        # ── Create session output directory ───────────────────────────
+        apk_stem = Path(apk_path).stem          # e.g. "vcamultra"
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        session_dir = self._base_output_dir / f"{apk_stem}_{timestamp}"
+        session_dir.mkdir(parents=True, exist_ok=True)
+        self.output_dir = session_dir           # redirect all writes here
+        self._log(f"Session output: {session_dir}")
+
         self._log(f"═══ Static Analysis: {os.path.basename(apk_path)} ═══")
         result = StaticResult(apk_path=apk_path)
 
