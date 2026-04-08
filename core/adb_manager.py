@@ -304,6 +304,88 @@ class ADBManager:
         self.shell_as_root("pkill -f frida-server")
         self._log("frida-server stopped")
 
+    def check_frida_on_device(self) -> bool:
+        """Return True if the frida-server binary exists on the device."""
+        output = self.shell(f"ls {self.FRIDA_REMOTE_PATH} 2>/dev/null")
+        return bool(output) and "No such file" not in output
+
+    def download_and_deploy_frida(
+        self,
+        frida_version: str = "16.5.9",
+        cache_dir: str = "frida_cache",
+    ) -> bool:
+        """
+        Auto-download the correct frida-server from GitHub and push it.
+
+        1. Detect device CPU architecture
+        2. Download from GitHub releases (cached locally)
+        3. Decompress .xz
+        4. Push to /data/local/tmp/frida-server
+        """
+        import urllib.request
+        import lzma as _lzma
+        import shutil as _shutil
+
+        # 1. Detect architecture
+        try:
+            arch = self.get_architecture()
+        except Exception as exc:
+            self._log(f"Architecture detection failed: {exc}", "ERROR")
+            return False
+
+        arch_map = {
+            Architecture.ARM64: "arm64", Architecture.ARM: "arm",
+            Architecture.X86_64: "x86_64", Architecture.X86: "x86",
+        }
+        frida_arch = arch_map.get(arch, "arm64")
+        self._log(f"Device arch: {arch.value} -> frida arch: {frida_arch}")
+
+        # 2. Build URL
+        fname = f"frida-server-{frida_version}-android-{frida_arch}.xz"
+        url = (f"https://github.com/frida/frida/releases/download/"
+               f"{frida_version}/{fname}")
+        self._log(f"Download URL: {url}")
+
+        # 3. Download (cached)
+        cache = Path(cache_dir)
+        cache.mkdir(parents=True, exist_ok=True)
+        xz_path = cache / fname
+        bin_path = cache / f"frida-server-{frida_version}-{frida_arch}"
+
+        if not xz_path.exists():
+            self._log(f"Downloading {fname} … (this may take a moment)")
+            try:
+                def _hook(count, bsz, total):
+                    if total > 0 and count % 50 == 0:
+                        pct = min(100, int(count * bsz * 100 / total))
+                        self._log(f"  Download progress: {pct}%")
+                urllib.request.urlretrieve(url, str(xz_path), _hook)
+                self._log(f"Downloaded to {xz_path}")
+            except Exception as exc:
+                self._log(
+                    f"Download failed: {exc}\n"
+                    f"  Manual: {url}\n"
+                    f"  Then:   adb push <file> {self.FRIDA_REMOTE_PATH}",
+                    "ERROR")
+                return False
+        else:
+            self._log(f"Cache hit: {xz_path}")
+
+        # 4. Decompress
+        if not bin_path.exists():
+            self._log("Decompressing .xz …")
+            try:
+                with _lzma.open(str(xz_path)) as fi, \
+                     open(str(bin_path), "wb") as fo:
+                    _shutil.copyfileobj(fi, fo)
+                self._log(f"Decompressed -> {bin_path.name}")
+            except Exception as exc:
+                self._log(f"Decompression failed: {exc}", "ERROR")
+                return False
+
+        # 5. Push
+        return self.push_frida_server(str(bin_path))
+
     def push_frida_server(self, local_path: str) -> bool:
         """
         Push a frida-server binary to the device.
