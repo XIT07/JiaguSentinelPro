@@ -19,6 +19,7 @@ results_JiaguSentinel/
 reports/
 sentinel.log
 *.log
+JiaguSentinel_Pro.spec
 
 # IDE
 .vscode/

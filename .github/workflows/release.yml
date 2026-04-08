@@ -29,6 +29,7 @@ jobs:
       - name: Build EXE with PyInstaller
         run: |
           pyinstaller --noconfirm --onefile --windowed --name "JiaguSentinel_Pro" --add-data "payloads;payloads" --add-data "ui;ui" --icon "ui/assets/icon.ico" main.py
+          
 
       - name: Create Source Code ZIP
         shell: pwsh
